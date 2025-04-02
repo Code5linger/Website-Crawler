@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Toonily Image Downloader</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .container {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        .input-group {
+            display: flex;
+            gap: 10px;
+        }
+
+        input {
+            flex: 1;
+            padding: 8px;
+            font-size: 16px;
+        }
+
+        button {
+            padding: 8px 16px;
+            background: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        button:disabled {
+            background: #cccccc;
+            cursor: not-allowed;
+        }
+
+        #status {
+            margin-top: 10px;
+            min-height: 20px;
+        }
+
+        #progress {
+            width: 100%;
+            margin-top: 10px;
+        }
+
+        .warning {
+            color: #ff9800;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>Toonily Image Downloader</h1>
+        <div class="input-group">
+            <input type="text" id="urlInput" placeholder="Enter Toonily chapter URL"
+                value="https://toonily.com/serie/my-daughter/chapter-1/">
+            <button id="crawlBtn">Download Chapter</button>
+        </div>
+        <div id="status">Enter a Toonily chapter URL and click the button</div>
+        <progress id="progress" value="0" max="100" style="display: none;"></progress>
+        <div class="warning">
+            <strong>Note:</strong> This must be run as a browser extension or with CORS disabled due to Toonily's
+            security measures.
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            const urlInput = document.getElementById('urlInput');
+            const crawlBtn = document.getElementById('crawlBtn');
+            const status = document.getElementById('status');
+            const progress = document.getElementById('progress');
+
+            // Special headers needed for Toonily
+            const toonilyHeaders = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Referer': 'https://toonily.com/',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5',
+            };
+
+            crawlBtn.addEventListener('click', async function () {
+                const pageUrl = urlInput.value.trim();
+
+                if (!pageUrl) {
+                    status.textContent = 'Please enter a URL';
+                    return;
+                }
+
+                if (!pageUrl.includes('toonily.com')) {
+                    status.textContent = 'This tool is specifically for Toonily.com';
+                    return;
+                }
+
+                try {
+                    crawlBtn.disabled = true;
+                    status.textContent = 'Fetching chapter content...';
+                    progress.style.display = 'block';
+                    progress.value = 0;
+
+                    // First fetch the HTML content
+                    const response = await fetch(pageUrl, {
+                        headers: toonilyHeaders,
+                        credentials: 'include'
+                    });
+
+                    if (!response.ok) {
+                        throw new Error(`HTTP error ${response.status}`);
+                    }
+
+                    const html = await response.text();
+                    status.textContent = 'Parsing images...';
+                    progress.value = 20;
+
+                    // Parse the HTML to find images
+                    const parser = new DOMParser();
+                    const doc = parser.parseFromString(html, 'text/html');
+
+                    // Toonily stores images in specific divs
+                    const readingContent = doc.querySelector('.reading-content');
+                    if (!readingContent) {
+                        throw new Error('Could not find comic content on page');
+                    }
+
+                    const images = readingContent.querySelectorAll('img');
+                    const imageUrls = Array.from(images).map(img => {
+                        // Get the highest quality version available
+                        return img.getAttribute('data-src') ||
+                            img.getAttribute('data-lazy-src') ||
+                            img.src;
+                    }).filter(url => url && url.includes('toonily.net'));
+
+                    if (imageUrls.length === 0) {
+                        throw new Error('No comic images found - Toonily may have changed their structure');
+                    }
+
+                    status.textContent = `Found ${imageUrls.length} images. Downloading...`;
+                    progress.value = 40;
+
+                    // Create zip file
+                    const zip = new JSZip();
+                    const folder = zip.folder('toonily_chapter');
+                    let downloadedCount = 0;
+
+                    // Download each image
+                    for (const [index, imgUrl] of imageUrls.entries()) {
+                        try {
+                            status.textContent = `Downloading page ${index + 1}/${imageUrls.length}...`;
+
+                            const imgResponse = await fetch(imgUrl, {
+                                headers: {
+                                    ...toonilyHeaders,
+                                    'Referer': pageUrl
+                                }
+                            });
+
+                            if (!imgResponse.ok) throw new Error(`HTTP error ${imgResponse.status}`);
+
+                            const blob = await imgResponse.blob();
+                            const filename = `page_${String(index + 1).padStart(3, '0')}.${blob.type.split('/')[1] || 'jpg'}`;
+                            folder.file(filename, blob);
+
+                            downloadedCount++;
+                            progress.value = 40 + (index / imageUrls.length * 60);
+                        } catch (error) {
+                            console.error(`Failed to download ${imgUrl}:`, error);
+                        }
+                    }
+
+                    if (downloadedCount === 0) {
+                        status.textContent = 'Failed to download any images';
+                        return;
+                    }
+
+                    status.textContent = 'Creating download package...';
+                    progress.value = 95;
+
+                    // Generate zip
+                    const content = await zip.generateAsync({ type: 'blob' }, (metadata) => {
+                        progress.value = 95 + (metadata.percent / 100 * 5);
+                    });
+
+                    // Download zip
+                    const blobUrl = URL.createObjectURL(content);
+                    const a = document.createElement('a');
+                    a.href = blobUrl;
+                    a.download = `toonily_${pageUrl.split('/').slice(-2, -1)[0]}.zip`;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+
+                    setTimeout(() => URL.revokeObjectURL(blobUrl), 100);
+
+                    status.textContent = `Downloaded ${downloadedCount} pages successfully!`;
+                    progress.value = 100;
+
+                } catch (error) {
+                    console.error('Error:', error);
+                    status.textContent = 'Error: ' + error.message;
+                    status.innerHTML += '<br><br>Try running this as a browser extension or with CORS disabled. ' +
+                        'Toonily has strict security measures.';
+                } finally {
+                    crawlBtn.disabled = false;
+                    setTimeout(() => progress.style.display = 'none', 2000);
+                }
+            });
+        });
+    </script>
+</body>
+
+</html>

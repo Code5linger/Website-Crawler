@@ -1,0 +1,20 @@
+{
+  "manifest_version": 3,
+  "name": "Toonily Image Downloader",
+  "version": "1.0",
+  "description": "Download all images from Toonily chapters",
+  "permissions": ["activeTab", "downloads", "scripting"],
+  "host_permissions": ["https://toonily.com/*", "https://*.toonily.net/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://toonily.com/*"],
+      "js": ["content.js"]
+    }
+  ]
+}
